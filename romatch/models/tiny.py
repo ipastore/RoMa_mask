@@ -39,6 +39,9 @@ class TinyRoMa(nn.Module):
                  symmetric = False, 
                  exact_softmax = False):
         super().__init__()
+
+        #TODO: self.mask_token?
+
         del xfeat.heatmap_head, xfeat.keypoint_head, xfeat.fine_matcher
         if freeze_xfeat:
             xfeat.train(False)
@@ -197,6 +200,7 @@ class TinyRoMa(nn.Module):
         im1 = ToTensor()(Image.open(im1_path))[None].to(device)
         return self.match(im0, im1, batched = False)
     
+    #TODO: add mask0 and mask1 as parameters. Default None?
     @torch.inference_mode()
     def match(self, im0, im1, *args, batched = True):
         # stupid
@@ -263,7 +267,7 @@ class TinyRoMa(nn.Module):
                         replacement=False)
         return good_matches[balanced_samples], good_certainty[balanced_samples]
         
-            
+    #TODO: add mask0 and mask1 as parameters. Default None
     def forward(self, batch):
         """
             input:
@@ -279,6 +283,9 @@ class TinyRoMa(nn.Module):
         B, C, H0, W0 = im0.shape
         B, C, H1, W1 = im1.shape
         to_normalized = torch.tensor((2/W1, 2/H1, 1)).to(im0.device)[None,:,None,None]
+
+        #TODO: apply mask0 and mask1?
+        
  
         if im0.shape[-2:] == im1.shape[-2:]:
             x = torch.cat([im0, im1], dim=0)

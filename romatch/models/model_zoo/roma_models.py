@@ -6,6 +6,7 @@ from romatch.models.transformer import Block, TransformerDecoder, MemEffAttentio
 from romatch.models.encoders import *
 from romatch.models.tiny import TinyRoMa
 
+#TODO: modify to add mask0 and mask1?
 def tiny_roma_v1_model(weights = None, freeze_xfeat=False, exact_softmax=False, xfeat = None):
     model = TinyRoMa(
         xfeat = xfeat,

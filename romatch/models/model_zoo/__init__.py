@@ -25,7 +25,10 @@ def tiny_roma_v1_outdoor(device, weights = None, xfeat = None):
             pretrained = True, 
             top_k = 4096).net
 
-    return tiny_roma_v1_model(weights = weights, xfeat = xfeat).to(device) 
+    return tiny_roma_v1_model(weights = weights, xfeat = xfeat).to(device)
+
+#TODO: make a function for tiny_roma_v1_indoor
+# Just change the wheights and return the tiny_roma_v1_model?
 
 def roma_outdoor(device, weights=None, dinov2_weights=None, coarse_res: Union[int,tuple[int,int]] = 560, upsample_res: Union[int,tuple[int,int]] = 864, amp_dtype: torch.dtype = torch.float16):
     if isinstance(coarse_res, int):
