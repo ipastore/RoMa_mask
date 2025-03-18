@@ -12,6 +12,8 @@ from PIL import Image
 from torchvision.transforms import ToTensor
 from romatch.utils.kde import kde
 
+from my_logging import debug_log
+
 class BasicLayer(nn.Module):
     """
         Basic Convolutional Layer: Conv2d -> BatchNorm -> ReLU
@@ -40,7 +42,6 @@ class TinyRoMa(nn.Module):
                  exact_softmax = False):
         super().__init__()
 
-        #TODO: self.mask_token?
 
         del xfeat.heatmap_head, xfeat.keypoint_head, xfeat.fine_matcher
         if freeze_xfeat:
@@ -330,10 +331,10 @@ class TinyRoMa(nn.Module):
             mask1_f = mask1_f.expand_as(feats_x1_f)  # shape: [B, C, H_feat, W_feat]
             feats_x1_f = feats_x1_f * mask1_f
 
-        logger.debug(f"Filtered x0_f: {self.get_active_count(feats_x0_f_to_filter) - self.get_active_count(feats_x0_f)}")
-        logger.debug(f"Filtered x1_f: {self.get_active_count(feats_x1_f_to_filter) - self.get_active_count(feats_x1_f)}")
-        logger.debug(f"Filtered x0_c: {self.get_active_count(feats_x0_c_to_filter) - self.get_active_count(feats_x0_c)}")
-        logger.debug(f"Filtered x1_c: {self.get_active_count(feats_x1_c_to_filter) - self.get_active_count(feats_x1_c)}")
+        debug_log(logger, "TinyRoma_forward", f"Filtered x0_f: {self.get_active_count(feats_x0_f_to_filter) - self.get_active_count(feats_x0_f)}")
+        debug_log(logger, "TinyRoma_forward", f"Filtered x1_f: {self.get_active_count(feats_x1_f_to_filter) - self.get_active_count(feats_x1_f)}")
+        debug_log(logger, "TinyRoma_forward", f"Filtered x0_c: {self.get_active_count(feats_x0_c_to_filter) - self.get_active_count(feats_x0_c)}")
+        debug_log(logger, "TinyRoma_forward", f"Filtered x1_c: {self.get_active_count(feats_x1_c_to_filter) - self.get_active_count(feats_x1_c)}")
         
         corr_volume = self.corr_volume(feats_x0_c, feats_x1_c)
         coarse_warp = self.pos_embed(corr_volume)

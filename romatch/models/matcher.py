@@ -14,6 +14,8 @@ from romatch.utils.local_correlation import local_correlation
 from romatch.utils.utils import check_rgb, cls_to_flow_refine, get_autocast_params, check_not_i16
 from romatch.utils.kde import kde
 
+from my_logging import debug_log
+
 class ConvRefiner(nn.Module):
     def __init__(
         self,
@@ -497,7 +499,7 @@ class RegressionMatcher(nn.Module):
     def forward(self, batch, batched = True, upsample = False, scale_factor = 1, mask0 = None, mask1 = None, logger=None):
         feature_pyramid = self.extract_backbone_features(batch, batched=batched, upsample = upsample)
        
-       #TODO: refactor with method
+       #TODO colon: refactor with method
         for scale, feats in feature_pyramid.items():
                 feats_0, feats_1 = feats.chunk(2, dim=0)
 
@@ -509,8 +511,8 @@ class RegressionMatcher(nn.Module):
                     mask1_resized = mask1.unsqueeze(0)
                     mask1_resized = F.interpolate(mask1_resized, size=feats_1.shape[-2:], mode='nearest')
                     feats_1 = feats_1 * mask1_resized
-                if logger is not None:
-                    logger.debug(f'Filtered feature pyramid at scale {scale} with mask0 and mask1: {self.get_active_count(feats) - self.get_active_count(feats_0) - self.get_active_count(feats_1)}')
+                debug_log(logger, "Roma_forward", f"Filtered feature pyramid at scale {scale} with mask0 and mask1: {self.get_active_count(feats) - self.get_active_count(feats_0) - self.get_active_count(feats_1)}")
+
                 # Combine back into a single [2, C, H_feat, W_feat]
                 feature_pyramid[scale] = torch.cat((feats_0, feats_1), dim=0)
 
@@ -536,7 +538,7 @@ class RegressionMatcher(nn.Module):
        
         feature_pyramid = self.extract_backbone_features(batch, batched = batched, upsample = upsample)
         
-        #TODO: refactor with method
+        #TODO colon: refactor with method
         # For each scale, filter the feature pyramids
         for scale, feats in feature_pyramid.items():
             feats_0, feats_1 = feats.chunk(2, dim=0)
@@ -549,8 +551,8 @@ class RegressionMatcher(nn.Module):
                 mask1_resized = mask1.unsqueeze(0)
                 mask1_resized = F.interpolate(mask1_resized, size=feats_1.shape[-2:], mode='nearest')
                 feats_1 = feats_1 * mask1_resized
-            if logger is not None:
-                logger.debug(f'Filtered feature pyramid at scale {scale} with mask0 and mask1: {self.get_active_count(feats) - self.get_active_count(feats_0) - self.get_active_count(feats_1)}')
+            debug_log(logger, "Roma_forward_symmetric", f"Filtered feature pyramid at scale {scale} with mask0 and mask1: {self.get_active_count(feats) - self.get_active_count(feats_0) - self.get_active_count(feats_1)}")
+
             # Combine back into a single [2, C, H_feat, W_feat]
             feature_pyramid[scale] = torch.cat((feats_0, feats_1), dim=0)
         
