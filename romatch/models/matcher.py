@@ -15,6 +15,7 @@ from romatch.utils.utils import check_rgb, cls_to_flow_refine, get_autocast_para
 from romatch.utils.kde import kde
 
 from my_logging import debug_log
+import time
 
 class ConvRefiner(nn.Module):
     def __init__(
@@ -499,7 +500,8 @@ class RegressionMatcher(nn.Module):
     def forward(self, batch, batched = True, upsample = False, scale_factor = 1, mask0 = None, mask1 = None, logger=None):
         feature_pyramid = self.extract_backbone_features(batch, batched=batched, upsample = upsample)
        
-       #TODO colon: refactor with method
+        #TODO colon: refactor with method
+        filter_start_time = time.time()
         for scale, feats in feature_pyramid.items():
                 feats_0, feats_1 = feats.chunk(2, dim=0)
 
@@ -515,6 +517,8 @@ class RegressionMatcher(nn.Module):
 
                 # Combine back into a single [2, C, H_feat, W_feat]
                 feature_pyramid[scale] = torch.cat((feats_0, feats_1), dim=0)
+        filter_time = time.time() - filter_start_time
+        debug_log(logger, "Roma_forward", f"Feature filtering took {filter_time:.4f} seconds")
 
         if batched:
             f_q_pyramid = {
@@ -532,13 +536,14 @@ class RegressionMatcher(nn.Module):
                                 **(batch["corresps"] if "corresps" in batch else {}),
                                 scale_factor=scale_factor)
         
-        return corresps
+        return corresps, filter_time
 
     def forward_symmetric(self, batch, batched = True, upsample = False, scale_factor = 1, mask0 = None, mask1 = None, logger=None):
        
         feature_pyramid = self.extract_backbone_features(batch, batched = batched, upsample = upsample)
         
         #TODO colon: refactor with method
+        filter_start_time = time.time()
         # For each scale, filter the feature pyramids
         for scale, feats in feature_pyramid.items():
             feats_0, feats_1 = feats.chunk(2, dim=0)
@@ -555,7 +560,9 @@ class RegressionMatcher(nn.Module):
 
             # Combine back into a single [2, C, H_feat, W_feat]
             feature_pyramid[scale] = torch.cat((feats_0, feats_1), dim=0)
-        
+        filter_time = time.time() - filter_start_time
+        debug_log(logger, "Roma_forward_symmetric", f"Feature filtering took {filter_time:.4f} seconds")
+
         f_q_pyramid = feature_pyramid
         f_s_pyramid = {
             scale: torch.cat((f_scale.chunk(2)[1], f_scale.chunk(2)[0]), dim = 0)
@@ -567,7 +574,7 @@ class RegressionMatcher(nn.Module):
                                 upsample = upsample, 
                                 **(batch["corresps"] if "corresps" in batch else {}),
                                 scale_factor=scale_factor)
-        return corresps
+        return corresps, filter_time
     
     # Get active count of features
     def get_active_count(self, feats):
@@ -668,6 +675,8 @@ class RegressionMatcher(nn.Module):
         batched=False,
         device = None
     ):
+        match_start_time = time.time()
+
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -715,9 +724,9 @@ class RegressionMatcher(nn.Module):
             finest_scale = 1
             # Run matcher
             if symmetric:
-                corresps  = self.forward_symmetric(batch, mask0=mask0, mask1=mask1, logger=logger)
+                corresps, filter_time = self.forward_symmetric(batch, mask0=mask0, mask1=mask1, logger=logger)
             else:
-                corresps = self.forward(batch, batched = True, mask0=mask0, mask1=mask1, logger=logger)
+                corresps, filter_time = self.forward(batch, batched = True, mask0=mask0, mask1=mask1, logger=logger)
 
             if self.upsample_preds:
                 hs, ws = self.upsample_res
@@ -746,11 +755,13 @@ class RegressionMatcher(nn.Module):
                 scale_factor = math.sqrt(self.upsample_res[0] * self.upsample_res[1] / (self.w_resized * self.h_resized))
                 batch = {"im_A": im_A, "im_B": im_B, "corresps": finest_corresps}
                 if symmetric:
-                    corresps = self.forward_symmetric(batch, upsample=True, batched=True, scale_factor=scale_factor)
+                    corresps, upsample_filter_time = self.forward_symmetric(batch, upsample = True, batched=True, scale_factor = scale_factor)
                 else:
-                    corresps = self.forward(batch, batched=True, upsample=True, scale_factor=scale_factor)
+                    corresps, upsample_filter_time = self.forward(batch, batched = True, upsample=True, scale_factor = scale_factor)
+                
+                filter_time += upsample_filter_time
 
-            im_A_to_im_B = corresps[finest_scale]["flow"]
+            im_A_to_im_B = corresps[finest_scale]["flow"] 
             certainty = corresps[finest_scale]["certainty"] - (low_res_certainty if self.attenuate_cert else 0)
             if finest_scale != 1:
                 im_A_to_im_B = F.interpolate(
@@ -787,15 +798,25 @@ class RegressionMatcher(nn.Module):
                 certainty = torch.cat(certainty.chunk(2), dim=3)
             else:
                 warp = torch.cat((im_A_coords, im_A_to_im_B), dim=-1)
+
+            matcher_pair_time = time.time() - match_start_time
+            debug_log(logger, "Roma_match", f"Total time for matching pair: {matcher_pair_time:.4f} seconds")
+            timings = {
+                "matcher_time": matcher_pair_time,
+                "filter_time": filter_time,
+            }
             if batched:
                 return (
                     warp,
-                    certainty[:, 0]
+                    certainty[:, 0],
+                    timings,
+
                 )
             else:
                 return (
                     warp[0],
                     certainty[0, 0],
+                    timings,
                 )
                 
     def visualize_warp(self, warp, certainty, im_A = None, im_B = None, 
