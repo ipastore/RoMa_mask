@@ -79,7 +79,15 @@ class TinyRoMa(nn.Module):
         rh, rw = H/_H, W/_W
 
         x = F.interpolate(x, (_H, _W), mode='bilinear', align_corners=False)
-        return x, rh, rw        
+        return x, rh, rw
+
+    def preprocess_mask(self, mask):
+        H, W = mask.shape[-2:]
+        _H, _W = (H//32) * 32, (W//32) * 32
+        rh, rw = H/_H, W/_W
+
+        mask = F.interpolate(mask, (_H, _W), mode='nearest' , align_corners=False)
+        return mask, rh, rw        
     
     def forward_single(self, x):
         with torch.inference_mode(self.freeze_xfeat or not self.training):
@@ -97,6 +105,7 @@ class TinyRoMa(nn.Module):
             x4 = F.interpolate(x4, (x3.shape[-2], x3.shape[-1]), mode='bilinear')
             x5 = F.interpolate(x5, (x3.shape[-2], x3.shape[-1]), mode='bilinear')
             feats = xfeat.block_fusion( x3 + x4 + x5 )
+
         if self.freeze_xfeat:
             return x2.clone(), feats.clone()
         return x2, feats
@@ -200,9 +209,8 @@ class TinyRoMa(nn.Module):
         im1 = ToTensor()(Image.open(im1_path))[None].to(device)
         return self.match(im0, im1, batched = False)
     
-    #TODO: add mask0 and mask1 as parameters. Default None?
     @torch.inference_mode()
-    def match(self, im0, im1, *args, batched = True):
+    def match(self, im0, im1, mask0, mask1, logger,*args, batched = True):
         # stupid
         if isinstance(im0, (str, Path)):
             return self.match_from_path(im0, im1)
@@ -215,7 +223,7 @@ class TinyRoMa(nn.Module):
         B,C,H0,W0 = im0.shape
         B,C,H1,W1 = im1.shape
         self.train(False)
-        corresps = self.forward({"im_A":im0, "im_B":im1})
+        corresps = self.forward({"im_A":im0, "im_B":im1}, mask0=mask0, mask1=mask1, logger=logger)
         #return 1,1
         flow = F.interpolate(
             corresps[4]["flow"], 
@@ -267,8 +275,7 @@ class TinyRoMa(nn.Module):
                         replacement=False)
         return good_matches[balanced_samples], good_certainty[balanced_samples]
         
-    #TODO: add mask0 and mask1 as parameters. Default None
-    def forward(self, batch):
+    def forward(self, batch, mask0 = None, mask1 = None, logger=None):
         """
             input:
                 x -> torch.Tensor(B, C, H, W) grayscale or rgb images
@@ -278,14 +285,17 @@ class TinyRoMa(nn.Module):
         im0 = batch["im_A"]
         im1 = batch["im_B"]
         corresps = {}
+
         im0, rh0, rw0 = self.preprocess_tensor(im0)
         im1, rh1, rw1 = self.preprocess_tensor(im1)
+        # if mask0 is not None:
+        #     mask0, mrh0, mrw0 = self.preprocess_mask(mask0.unsqueeze(0))
+        # if mask1 is not None:
+        #     mask1, mrh1, mrw1 = self.preprocess_mask(mask1.unsqueeze(0))
+        
         B, C, H0, W0 = im0.shape
         B, C, H1, W1 = im1.shape
-        to_normalized = torch.tensor((2/W1, 2/H1, 1)).to(im0.device)[None,:,None,None]
-
-        #TODO: apply mask0 and mask1?
-        
+        to_normalized = torch.tensor((2/W1, 2/H1, 1)).to(im0.device)[None,:,None,None]      
  
         if im0.shape[-2:] == im1.shape[-2:]:
             x = torch.cat([im0, im1], dim=0)
@@ -295,6 +305,36 @@ class TinyRoMa(nn.Module):
         else:
             feats_x0_f, feats_x0_c = self.forward_single(im0)
             feats_x1_f, feats_x1_c = self.forward_single(im1)
+        
+        feats_x0_c_to_filter = feats_x0_c.clone()
+        feats_x1_c_to_filter = feats_x1_c.clone()
+        feats_x0_f_to_filter = feats_x0_f.clone()
+        feats_x1_f_to_filter = feats_x1_f.clone()
+
+        # Apply masks to feature maps if provided
+        if mask0 is not None:
+            mask0 = mask0.unsqueeze(0)  # shape: [1, 1, H, W]
+            mask0_c = F.interpolate(mask0, size=feats_x0_c.shape[-2:], mode='nearest')  # shape: [1, 1, H_feat, W_feat]
+            mask0_c = mask0_c.expand_as(feats_x0_c)  # shape: [B, C, H_feat, W_feat]
+            feats_x0_c = feats_x0_c * mask0_c
+            mask0_f = F.interpolate(mask0, size=feats_x0_f.shape[-2:], mode='nearest')  # shape: [1, 1, H_feat, W_feat]
+            mask0_f = mask0_f.expand_as(feats_x0_f)  # shape: [B, C, H_feat, W_feat]
+            feats_x0_f = feats_x0_f * mask0_f
+
+        if mask1 is not None:
+            mask1 = mask1.unsqueeze(0)  # shape: [1, 1, H, W]
+            mask1_c = F.interpolate(mask1, size=feats_x1_c.shape[-2:], mode='nearest')  # shape: [1, 1, H_feat, W_feat]
+            mask1_c = mask1_c.expand_as(feats_x1_c)  # shape: [B, C, H_feat, W_feat]
+            feats_x1_c = feats_x1_c * mask1_c
+            mask1_f = F.interpolate(mask1, size=feats_x1_f.shape[-2:], mode='nearest')  # shape: [1, 1, H_feat, W_feat]
+            mask1_f = mask1_f.expand_as(feats_x1_f)  # shape: [B, C, H_feat, W_feat]
+            feats_x1_f = feats_x1_f * mask1_f
+
+        logger.debug(f"Filtered x0_f: {self.get_active_count(feats_x0_f_to_filter) - self.get_active_count(feats_x0_f)}")
+        logger.debug(f"Filtered x1_f: {self.get_active_count(feats_x1_f_to_filter) - self.get_active_count(feats_x1_f)}")
+        logger.debug(f"Filtered x0_c: {self.get_active_count(feats_x0_c_to_filter) - self.get_active_count(feats_x0_c)}")
+        logger.debug(f"Filtered x1_c: {self.get_active_count(feats_x1_c_to_filter) - self.get_active_count(feats_x1_c)}")
+        
         corr_volume = self.corr_volume(feats_x0_c, feats_x1_c)
         coarse_warp = self.pos_embed(corr_volume)
         coarse_matches = torch.cat((coarse_warp, torch.zeros_like(coarse_warp[:,-1:])), dim=1)
@@ -309,3 +349,9 @@ class TinyRoMa(nn.Module):
         fine_matches = coarse_matches_up_detach+fine_matches_delta * to_normalized
         corresps[4] = {"flow": fine_matches[:,:2], "certainty": fine_matches[:,2:]}
         return corresps
+    
+    # Get active count of features
+    def get_active_count(self, feats):
+        norms = torch.norm(feats, dim=1)
+        active_count = (norms > 0.1).sum()
+        return active_count

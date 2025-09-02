@@ -494,8 +494,26 @@ class RegressionMatcher(nn.Module):
                           replacement=False)
         return good_matches[balanced_samples], good_certainty[balanced_samples]
 
-    def forward(self, batch, batched = True, upsample = False, scale_factor = 1):
+    def forward(self, batch, batched = True, upsample = False, scale_factor = 1, mask0 = None, mask1 = None, logger=None):
         feature_pyramid = self.extract_backbone_features(batch, batched=batched, upsample = upsample)
+       
+       #TODO: refactor with method
+        for scale, feats in feature_pyramid.items():
+                feats_0, feats_1 = feats.chunk(2, dim=0)
+
+                if mask0 is not None:
+                    mask0_resized = mask0.unsqueeze(0)
+                    mask0_resized = F.interpolate(mask0_resized, size=feats_0.shape[-2:], mode='nearest')
+                    feats_0 = feats_0 * mask0_resized
+                if mask1 is not None:
+                    mask1_resized = mask1.unsqueeze(0)
+                    mask1_resized = F.interpolate(mask1_resized, size=feats_1.shape[-2:], mode='nearest')
+                    feats_1 = feats_1 * mask1_resized
+                if logger is not None:
+                    logger.debug(f'Filtered feature pyramid at scale {scale} with mask0 and mask1: {self.get_active_count(feats) - self.get_active_count(feats_0) - self.get_active_count(feats_1)}')
+                # Combine back into a single [2, C, H_feat, W_feat]
+                feature_pyramid[scale] = torch.cat((feats_0, feats_1), dim=0)
+
         if batched:
             f_q_pyramid = {
                 scale: f_scale.chunk(2)[0] for scale, f_scale in feature_pyramid.items()
@@ -505,6 +523,7 @@ class RegressionMatcher(nn.Module):
             }
         else:
             f_q_pyramid, f_s_pyramid = feature_pyramid
+        
         corresps = self.decoder(f_q_pyramid, 
                                 f_s_pyramid, 
                                 upsample = upsample, 
@@ -513,19 +532,46 @@ class RegressionMatcher(nn.Module):
         
         return corresps
 
-    def forward_symmetric(self, batch, batched = True, upsample = False, scale_factor = 1):
+    def forward_symmetric(self, batch, batched = True, upsample = False, scale_factor = 1, mask0 = None, mask1 = None, logger=None):
+       
         feature_pyramid = self.extract_backbone_features(batch, batched = batched, upsample = upsample)
+        
+        #TODO: refactor with method
+        # For each scale, filter the feature pyramids
+        for scale, feats in feature_pyramid.items():
+            feats_0, feats_1 = feats.chunk(2, dim=0)
+
+            if mask0 is not None:
+                mask0_resized = mask0.unsqueeze(0)
+                mask0_resized = F.interpolate(mask0_resized, size=feats_0.shape[-2:], mode='nearest')
+                feats_0 = feats_0 * mask0_resized
+            if mask1 is not None:
+                mask1_resized = mask1.unsqueeze(0)
+                mask1_resized = F.interpolate(mask1_resized, size=feats_1.shape[-2:], mode='nearest')
+                feats_1 = feats_1 * mask1_resized
+            if logger is not None:
+                logger.debug(f'Filtered feature pyramid at scale {scale} with mask0 and mask1: {self.get_active_count(feats) - self.get_active_count(feats_0) - self.get_active_count(feats_1)}')
+            # Combine back into a single [2, C, H_feat, W_feat]
+            feature_pyramid[scale] = torch.cat((feats_0, feats_1), dim=0)
+        
         f_q_pyramid = feature_pyramid
         f_s_pyramid = {
             scale: torch.cat((f_scale.chunk(2)[1], f_scale.chunk(2)[0]), dim = 0)
             for scale, f_scale in feature_pyramid.items()
         }
+
         corresps = self.decoder(f_q_pyramid, 
                                 f_s_pyramid, 
                                 upsample = upsample, 
                                 **(batch["corresps"] if "corresps" in batch else {}),
                                 scale_factor=scale_factor)
         return corresps
+    
+    # Get active count of features
+    def get_active_count(self, feats):
+        norms = torch.norm(feats, dim=1)
+        active_count = (norms > 0.1).sum()
+        return active_count
     
     def conf_from_fb_consistency(self, flow_forward, flow_backward, th = 2):
         # assumes that flow forward is of shape (..., H, W, 2)
@@ -611,11 +657,14 @@ class RegressionMatcher(nn.Module):
     @torch.inference_mode()
     def match(
         self,
-        im_A_input,
-        im_B_input,
+        im_A_path,
+        im_B_path,
+        mask0 = None,
+        mask1 = None,
+        logger = None,
         *args,
         batched=False,
-        device=None,
+        device = None
     ):
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -664,9 +713,9 @@ class RegressionMatcher(nn.Module):
             finest_scale = 1
             # Run matcher
             if symmetric:
-                corresps = self.forward_symmetric(batch)
+                corresps  = self.forward_symmetric(batch, mask0=mask0, mask1=mask1, logger=logger)
             else:
-                corresps = self.forward(batch, batched=True)
+                corresps = self.forward(batch, batched = True, mask0=mask0, mask1=mask1, logger=logger)
 
             if self.upsample_preds:
                 hs, ws = self.upsample_res
